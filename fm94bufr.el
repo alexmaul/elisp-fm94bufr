@@ -1225,19 +1225,53 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 (defun bufr-help ()
   "Show help text."
   (interactive)
-  (message "***** Decode/encode WMO FM94 BUFR message in current buffer. *****
+  (display-message-or-buffer "
+***** Decode/encode WMO FM94 BUFR message in current buffer. *****
 
 The environment variable $BUFR_TABLES must point to a directory where
 table files (eccodes-style) are located.
 
-*** Decode, 'M-x bufr-decode': ***
+*** Decode, 'M-x bufr-decode' ***
 
-In a buffer A containing at least one BUFR message move the cursor over the
-message to decode, and start decoding with 'M-x bufr-decode'.
+In a buffer *A* containing at least one BUFR message move the cursor over the
+message to decode, and start decoding with `M-x bufr-decode´.
 A message starts with the keyword `BUFR´ and ends with `7777´.
 
-The decoded text is displayed in a new buffer B, with it's name set to
-A's name plus `-decoded´. In A the curser is set to the start of the message."
+The decoded text is displayed in a new buffer *B*, with it's name set to
+*A*'s name plus `-decoded´. In *A* the curser is set to the start of the message.
+
+*** Encode, 'M-x bufr-encode' ***
+
+In a buffer *B* with text decoded from a BUFR message or such text loaded from
+a file start encoding with `M-x bufr-encode´.
+
+This buffer *B* can contain only the text of *one* decoded BUFR message!
+It'll be evaluated from start to end (point-min to point-max).
+
+In case the text in buffer *B* is the result from a previously decoded a BUFR
+message from buffer *A* the start and end points in *A* are remembered and the
+encoding of *B* will replace the BUFR in *A*.
+
+You might edit the decoded text to your likings, only you must preserve the
+overall structure. Important for the encoding are the first column (keywords
+or descriptors) and the values after the first colon `:`. Any text string
+following this numeric value is discarded as it was only verbose translation
+of the numeric values -- unless the descriptor describes a value of type
+'string', in which case all text up to the line-break is encoded accordingly.
+
+If you change the number of subsets or replications, you must reduce or extend
+the list of affected descriptors/lines accordingly. Otherwise the encoding
+process will miss-step and throw an error or the created BUFR message is faulty.
+
+*** Reset encoding-target, `M-x bufr-reset-encode´ ***
+
+As the meta-command `bufr-encode´ is intended to replace a previously decoded
+BUFR you can reset the target buffer for encoding with `M-x bufr-reset-encode´.
+
+The following command `bufr-encode´ will create a new buffer with the name of
+buffer *B* plus `-encoded´.
+
+*****  *****"
 	   ))
 
 
@@ -1298,6 +1332,14 @@ A's name plus `-decoded´. In A the curser is set to the start of the message."
     ))
 
 
+(defun bufr-reset-encode ()
+  "Resets name and buffer for encoding."
+  (interactive)
+  (setq bufr-obuf nil)
+  (setf bufr-start -1)
+  (setf bufr-end -1))
+
+
 (defun bufr-encode ()
   "Encodes well-formatted text to WMO FM94 BUFR message."
   (interactive)
@@ -1306,11 +1348,10 @@ A's name plus `-decoded´. In A the curser is set to the start of the message."
     (setq bufr-cur_bit 0)
     (setq bufr-olist '())
     (setq bufr-dbuf (current-buffer))
-    (setq dnam (buffer-name))
-    (setq bnam (replace-regexp-in-string "-decoded" "" dnam))
-;    (when (eq bufr-obuf nil)
-      (setq bnam (concat dnam "-encoded"))
-      (setq bufr-obuf (get-buffer-create bnam)) ; )
+    (when (eq bufr-obuf nil)
+      (setq dnam (buffer-name))
+      (setq bnam (concat (string-replace "-decoded" "" dnam) "-encoded"))
+      (setq bufr-obuf (get-buffer-create bnam)))
     (condition-case err
      	(progn
      	  (save-excursion
@@ -1346,6 +1387,7 @@ A's name plus `-decoded´. In A the curser is set to the start of the message."
 
 (provide 'bufr-help)
 (provide 'bufr-decode)
+(provide 'bufr-reset-encode)
 (provide 'bufr-encode)
 
 ;;; fm94bufr.el ends here

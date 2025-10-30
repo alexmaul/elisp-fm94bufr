@@ -2,9 +2,6 @@
 
 Emacs-plugin de-/encoding WMO FM94 BUFR messages.
 
-> The Environment variable $BUFR_TABLES must point to a
-> directory where table files (eccodes-style) are located.
-
 (C) 2025 alexmaul
 
 ### Licence
@@ -16,11 +13,17 @@ the Free Software Foundation, either version 3 of the License, or
 
 ## Auto-load Plugin
 
-- Windows:
+First, make sure the environment variable $BUFR_TABLES (or %BUFR_TABLES% on
+a Windows system) points to a directory where the TDCF BUFR table files are
+located, the path ending in ".../bufr/tables").
 
-  Emacs config file `C:\Users\<USER>\AppData\Roaming\.emacs`
+The BUFR table files are *not* part of this project. They have to be in ECMWF's
+*eccodes* format and are available at [https://confluence.ecmwf.int/display/ECC/Releases](https://confluence.ecmwf.int/display/ECC/Releases).
 
-  Extension-path `C:\Users\<USER>\AppData\Roaming\.emacs.d\extensions`
+If you intend to en-/decode BUFR using "local tables", please aquire them from
+the originator or the met. service providing you with those BUFR messages. They
+need to be placed in the directory ponited at by the environment variable
+$BUFR_TABLES.
 
 - Linux
 
@@ -28,17 +31,28 @@ the Free Software Foundation, either version 3 of the License, or
   
   Extension-path `$HOME/.emacs.d/extensions`
 
+- Windows:
+
+  Emacs config file `C:\Users\<USER>\AppData\Roaming\.emacs`
+
+  Extension-path `C:\Users\<USER>\AppData\Roaming\.emacs.d\extensions`
+
 Place the file `fm94bufr.el` from this project in the extension-path and add
 the follwing lines to your Emacs config file:
 
 ```
-(add-to-list 'load-path "c:/Users/amaul/AppData/Roaming/emacs.d/extensions")
+(add-to-list 'load-path "<EXTENSION-PATH>")
 (require 'bufr-decode "fm94bufr.el")
 ```
 
 ## Usage
 
 The command `M-x bufr-help` displays this instructions.
+
+Decoding is available for BUFR editions 3 and 4.
+Encoding is only possible for BUFR edition 4.
+
+Not all operator descriptors are implemented, available are 201yyy to 208yyy.
 
 ### Decode, `M-x bufr-decode`
 
@@ -47,7 +61,7 @@ message to decode, and start decoding with `M-x bufr-decode`.
 A message starts with the keyword `BUFR` and ends with `7777`.
 
 The decoded text is displayed in a new buffer *B*, with it's name set to
-*A*'s name plus `-decoded´. In *A* the curser is set to the start of the message.
+*A*'s name plus "-decoded". In *A* the cursor is set to the start of the message.
 
 ### Encode, `M-x bufr-encode`
 
@@ -61,7 +75,7 @@ In case the text in buffer *B* is the result from a previously decoded a BUFR
 message from buffer *A* the start and end points in *A* are remembered and the
 encoding of *B* will replace the BUFR in *A*.
 
-You might edit the decoded text to your likings, only you must preserve the
+You might edit the decoded text to your liking, only you must preserve the
 overall structure. Important for the encoding are the first column (keywords
 or descriptors) and the values after the first colon `:`. Any text string
 following this numeric value is discarded as it was only verbose translation
