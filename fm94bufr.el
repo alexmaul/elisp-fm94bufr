@@ -17,7 +17,9 @@
 ;;
 ;;; Code:
 ;;
-;; table store
+;;;; Global variables
+;;
+;;;;; Table store
 ;;
 (defvar bufr-table-base (substitute-in-file-name "$BUFR_TABLES"))
 (defvar bufr-tab_a '())
@@ -26,7 +28,7 @@
 (defvar bufr-tab_cf (make-hash-table :test 'equal))
 (defvar bufr-loadedtables '())
 ;;
-;; global vars for decoding section data
+;;;; For decoding section data
 ;;
 (defvar bufr-start -1)
 (defvar bufr-end -1)
@@ -39,12 +41,12 @@
 
 
 ;;
-;; Reading tables
+;;;; Reading tables
 ;;
 (defun bufr-read-table-files (which mvers &optional cntr scntr lvers)
   "Read/parse the table files and store them in global variables.
 
-WHICH ones to load: `m´ = master tables or `l´ = local tables,
+WHICH ones to load: \='master tables or \='local tables,
 MVERS: master version, when loading local tables in can be nil.
        Can be a number or the string `latest´, where the tables
        with the highest version are loaded.
@@ -55,7 +57,7 @@ CNTR: centre,
 SCNTR: sub-centre."
   (let (tabstr (tabfnlst '()) filePath)
     (cond
-     ((equal which "m")
+     ((equal which 'master)
       ;; Prepare filenames for master tables
       (when (equal mvers "latest")
 	;; search for table file with highest version
@@ -71,7 +73,7 @@ SCNTR: sub-centre."
 	(push (format "%s/0/wmo/%d/element.table" bufr-table-base mvers) tabfnlst)
 	(push (format "%s/datacat.table" bufr-table-base) tabfnlst)
 	))
-     ((equal which "l")
+     ((equal which 'local)
       ;; Prepare filenames for local tables
       (setq tabstr (format "%d-%d-%d" cntr scntr lvers))
       (when (and (eq (member tabstr bufr-loadedtables) nil)
@@ -163,7 +165,7 @@ SCNTR: sub-centre."
   nil)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Decoding
+;;;; Decoding
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun bufr-from-flat-bits (width)
@@ -194,18 +196,18 @@ SCNTR: sub-centre."
     ))
 
 
-(defun bufr-from-bytes (octets &optional as)
-  "Read an ammount of OCTETS (bytes).
+(defun bufr-from-bytes (octwidth &optional as)
+  "Read an ammount of OCTWIDTH (bytes).
 AS=num: interpreted as an MSB integer,
 AS=str: joined to a string."
   (let (r)
     (if (eq as 'str)
 	(progn
-	  (setq r (buffer-substring-no-properties (point) (+ (point) octets)))
-	  (forward-char octets))
+	  (setq r (buffer-substring-no-properties (point) (+ (point) octwidth)))
+	  (forward-char octwidth))
       (let (c)
 	(setf r 0)
-	(dotimes (_ octets)
+	(dotimes (_ octwidth)
 	  (setf r (ash r 8))
 	  (setf c (logand (char-after) 255))
 	  (setf r (logior r c))
@@ -219,7 +221,7 @@ AS=str: joined to a string."
 AS=num (default) returns them as an integer number,
 or AS=str a string (WIDTH should be a multiple of 8).
 SUBSIDX states the currently decoded subset (0..n) when
-compression is used, set to -1 if no cempression is used."
+compression is used, set to -1 if no compression is used."
   (let ((val 0))
     (if (= subsidx -1)
 	;; Read bits without compression
@@ -361,6 +363,7 @@ If END is nil just move the bit-pointer to the start of the next octet."
     ;;
     ;; Section 1
     ;;
+					; TODO compact to key looping
     (setf sectstart (point))
     (setq sectlen (bufr-from-bytes 3))
     (bufr-from-bytes 1)
@@ -469,6 +472,7 @@ If END is nil just move the bit-pointer to the start of the next octet."
       (push txt desclst))
     (puthash "udesc" (reverse desclst) bufr-meta)
     (with-current-buffer bufr-dbuf
+					; TODO compact
       (insert (format "%-5s   Subsets               : %s\n" "subs" (gethash "subs" bufr-meta)))
       (insert (format "%-5s   Observed data         : %s\n" "obs" (gethash "obs" bufr-meta)))
       (insert (format "%-5s   Compression           : %s\n" "comp" (gethash "comp" bufr-meta)))
@@ -483,11 +487,11 @@ If END is nil just move the bit-pointer to the start of the next octet."
     (setf sectlen (bufr-from-bytes 3))
     (setf sectend (+ (- (point) 3) sectlen))
     (bufr-from-bytes 1)
+    ;; Remember 'point' for reading compressed data multiple times (once per subset)
     (setf comploopstart (point))
     ;; For each subset/report do:
     (dotimes (subsidx (gethash "subs" bufr-meta))
-      (with-current-buffer bufr-dbuf
-	(insert (format "------  SUBSET %d\n" (1+ subsidx))))
+      (bufr-dec-print "------" "SUBSET" (1+ subsidx))
       ;; Reset modifiers set by fxx=201|202|203|204|207|208
       (setq bufr-modifier (make-hash-table :test 'equal))
       ;; Reset modifiers for new subset:
@@ -518,7 +522,9 @@ If END is nil just move the bit-pointer to the start of the next octet."
   ;;
   (let (txt (r nil))
     (setq txt (bufr-from-bytes 4 'str))
-    (unless (or (= (point) (1+ bufr-end)) (= (point) (point-max)))
+    (unless (or
+	     (= (point) (1+ bufr-end))
+	     (= (point) (point-max)))
       (setq txt
 	    (format "!! Error reaching end, %d<>%d '%s' !!\n"
 		    (point) (1+ bufr-end) txt))
@@ -672,8 +678,8 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
       ;; The data description operator 2 04 YYY, other than 2 04 000, shall
       ;; be followed immediately by the descriptor 0 31 021 to indicate the
       ;; meaning of the associated field.
-					; bufr-modifier{"quality"} is list bits-width, acting as stack.
-					; for each new value to push add bits from previous to the new.
+      ;; ; bufr-modifier{"quality"} is list of bits-width, acting as stack.
+      ;; ; for each new value to push add bits from previous to the new.
       (setq a (gethash "quality" bufr-modifier))
       (if (= y 0)
 	  ;; yyy=000 removes quality information last added.
@@ -691,7 +697,9 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
       ;; inserted as a data field of YYY x 8 bits in length.
       (let (txt)
 	(setq txt (string-trim (concat (bufr-from-bits subsidx (* y 8) 'str))))
-	(when (or (= (length txt) 0) (equal txt (make-string y ?\377)))
+	(when (or
+	       (= (length txt) 0)
+	       (equal txt (make-string y ?\377)))
 	  (setq txt nil))
 	(setq r (cons "signify characters" txt)))
       )
@@ -760,7 +768,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
     (insert (format "DEBUG: %s\n" (mapconcat (lambda (s) (format "%s" s)) txtlst ", ")))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Encoding
+;;;; Encoding
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun bufr-enbug (&rest txtlst)
@@ -806,7 +814,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 
 
 (defun bufr-to-flat-bits (sectrevoct rval awidth)
-  "Prepend SECTREVOCT with some bytes made of number RVAL of AWIDTH bits length."
+  "Prepend SECTREVOCT with some bytes made of number RVAL with AWIDTH bits length."
   (let ((v 0) (ub awidth) (lb bufr-cur_bit) rb foo)
     ;; ub: unprocessed bits
     ;; lb: left border bit, 0-7
@@ -855,14 +863,14 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	(dolist (valset sectvalues)
 	  (setf awidth (car (car valset)))
 	  (when awidth
-	    ;; VALSET is alternating list of a) assoc. quality values and b) data values
+	    ;; VALSET is alternating list of a) assoc. quality values and b) data values.
 	    ;; The width value (AWIDTH) of assoc. quality data is set to NIL if there are
-	    ;; no quality data for a descriptor, and to a number if there are, only in
+	    ;; no quality data for a descriptor, and to a number if there are -- only in
 	    ;; this case the values are encoded.
 	    (setf typ (cdr (car valset)))
-	    (setf R0 (apply #'min (cdr valset)))  ;; reference value
-	    (setf Vx (apply #'max (cdr valset)))  ;; maximum value, incl. "missing"
-	    (setf Vxr (apply #'max (mapcar        ;; maximum value, without "missing"
+	    (setf R0 (apply #'min (cdr valset)))  ; reference value
+	    (setf Vx (apply #'max (cdr valset)))  ; maximum value, incl. "missing"
+	    (setf Vxr (apply #'max (mapcar        ; maximum value, without "missing"
 				    (lambda (x)
 				      (if (eq x (- (ash 1 awidth) 1)) 0 x))
 				    (cdr valset))))
@@ -890,12 +898,12 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 		  (if (= val (- (ash 1 awidth) 1))
 		      (push nil bufIn)
 		    (push In bufIn)))
-		;; Replace collected nil-values by a defference wit all bits set to 1
+		;; Replace collected nil-values by a difference with all bits set to 1
 		(dolist (In bufIn)
 		  (if (eq In nil)
 		      (push (- (ash 1 nbinc) 1) listIn)
 		    (push In listIn)))
-		;; Write bits of reference value
+		;; Write bits of reference value R0
 		(setq sectoctets (bufr-to-flat-bits sectoctets R0 awidth))
 		(if (equal typ "string")
 		    (progn
@@ -1162,9 +1170,9 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	  (push bar udlst)
 	  )
 	)
-					;       (t
-					;	(error (format "Unknown key '%s'!" mgkey))
-					;	)
+       (t
+	(error (format "Unknown key '%s'!" mgkey))
+	)
        )
       (if (eq (re-search-forward regex-line nil t) nil)
 	  (setq mgkey nil)
@@ -1225,16 +1233,12 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	    (setq sectvalues (bufr-set-value sectvalues subsidx descidx desc typ fact offs wdth mgval qual))
 	    (setf descidx (1+ descidx))
 	    ))
-	 ((= f 1)
-	  ;; nothing to encode
-	  )
+	 ;; (= f 1)   nothing to encode
 	 ((= f 2)
 	  ;; evaluate descriptor for modifiers
 	  (setq sectvalues (bufr-enc-eval-oper x y mgval sectvalues subsidx descidx))
 	  )
-	 ((= f 3)
-	  ;; nothing to encode
-	  )
+	 ;; (= f 3)   nothing to encode
 	 )
 	;; Read/match next line
 	(if (eq (re-search-forward regex-line (line-end-position) t) nil)
@@ -1267,7 +1271,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
     ))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Main interactive functions
+;;;; Main interactive functions
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun bufr-help ()
@@ -1359,8 +1363,8 @@ buffer *B* plus `-encoded´.
 	    ;; In current buffer decode BUFR sections with metadata
 	    (bufr-dec-sect-0to1)
 	    ;; Load tables if neccessary
-	    (bufr-read-table-files "m" (gethash "mvers" bufr-meta))
-	    (bufr-read-table-files "l" nil
+	    (bufr-read-table-files 'master (gethash "mvers" bufr-meta))
+	    (bufr-read-table-files 'local nil
 				   (gethash "centr" bufr-meta)
       				   (gethash "scntr" bufr-meta)
        				   (gethash "lvers" bufr-meta))
@@ -1381,7 +1385,7 @@ buffer *B* plus `-encoded´.
 
 
 (defun bufr-reset-encode ()
-  "Resets name and buffer for encoding."
+  "Reset name and buffer for encoding."
   (interactive)
   (setq bufr-obuf nil)
   (setf bufr-start -1)
@@ -1406,8 +1410,8 @@ buffer *B* plus `-encoded´.
      	    ;; In current buffer decode BUFR sections with metadata
 	    (bufr-enc-sect-1to3)
      	    ;; Load tables if neccessary
-	    (bufr-read-table-files "m" (gethash "mvers" bufr-meta))
-	    (bufr-read-table-files "l" nil
+	    (bufr-read-table-files 'master (gethash "mvers" bufr-meta))
+	    (bufr-read-table-files 'local nil
 	     			   (gethash "centr" bufr-meta)
 	       			   (gethash "scntr" bufr-meta)
 	        		   (gethash "lvers" bufr-meta))
