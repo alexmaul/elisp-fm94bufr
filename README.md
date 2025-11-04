@@ -22,7 +22,7 @@ The BUFR table files are *not* part of this project. They have to be in ECMWF's
 
 If you intend to en-/decode BUFR using "local tables", please aquire them from
 the originator or the met. service providing you with those BUFR messages. They
-need to be placed in the directory ponited at by the environment variable
+need to be placed in the directory pointed at by the environment variable
 $BUFR_TABLES.
 
 - Linux
@@ -84,7 +84,7 @@ of the numeric values -- unless the descriptor describes a value of type
 
 If you change the number of subsets or replications, you must reduce or extend
 the list of affected descriptors/lines accordingly. Otherwise the encoding
-process will miss-step and throw an error or the created BUFR message is faulty.
+process will misstep and throw an error or the created BUFR message is faulty.
 
 ### Reset encoding-target, `M-x bufr-reset-encode`
 
