@@ -1188,7 +1188,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 (defun bufr--enc-sect-1to3 ()
   "Encoding metadata to sections 1, 2, and 3."
   (let (val foo bar mgkey mgval sectlen sectoctets s1sizes (s2present 0)
-	    (udlst '()) (regex-line "^\\([a-z2]+\\) +[^:]+: \\(.+\\)$"))
+	    lastmg (udlst '()) (regex-line "^\\([a-z2]+\\) +[^:]+: \\(.+\\)$"))
     ;; Test validity
     (goto-char (point-min))
     (setq mgkey (buffer-substring (point) (+ (point) 4)))
@@ -1209,9 +1209,26 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
     (setq mgval (match-string 2))
     (forward-line)
     (while (not (eq (assoc mgkey s1sizes) nil))
+      ;; Collect lines of sect.1
+      (if (equal mgkey "adpd")
+	  (puthash mgkey mgval bufr--meta)
+	(puthash mgkey
+		 (string-to-number (car (split-string mgval " ")))
+		 bufr--meta))
+      (re-search-forward regex-line)
+      (setq mgkey (match-string 1))
+      (setq mgval (match-string 2))
+      (setq lastmg (cons mgkey mgval))
+      (forward-line)
+      ) ;; end while
+    (dolist (s1elem s1sizes)
+      ;; Eval collected sect.1 key:val.
+      ;; Done in two steps b/o different order in Ed.3/4
+      (setq mgkey (car s1elem))
+      (setq mgval (gethash mgkey bufr--meta 0))
       (cond
        ((equal mgkey "sect2")
-	(if (equal mgval "1")
+	(if (= mgval 1)
 	    (progn
 	      (setq val (list 128))
 	      (setf s2present 1))
@@ -1221,26 +1238,19 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	    (setq val (bufr--hex-to-num mgval))
 	  (setq val nil)))
        ((equal mgkey "edit")
-        (unless (equal mgval "4")
+        (unless (= mgval 4)
           (error (format "Encoding BUFR edition '%s' not supported!" mgval))
           ))
        (t
 	(setq val (bufr--to-bytes
 		   (cdr (assoc mgkey s1sizes))
-		   (string-to-number mgval)))))
+		   mgval))))
       (setq sectoctets (append sectoctets val))
-      (if (equal mgkey "adpd")
-	  (puthash mgkey mgval bufr--meta)
-	(puthash mgkey
-		 (string-to-number (car (split-string mgval " ")))
-		 bufr--meta))
-      (re-search-forward regex-line)
-      (setq mgkey (match-string 1))
-      (setq mgval (match-string 2))
-      (forward-line)
-      ) ;; end while
+      ) ;; end dolist
     (setq val (bufr--to-bytes 3 (+ (length sectoctets) 4)))
     (setq bufr--olist (append bufr--olist val (list 0) sectoctets))
+    (setq mgkey (car lastmg))
+    (setq mgval (cdr lastmg))
     ;; Section 2
     (when (and (equal mgkey "s2dat") (= s2present 1))
       (setq sectoctets (bufr--hex-to-num mgval))
@@ -1515,7 +1525,7 @@ buffer *B* plus `-encoded´.
 (defun bufr-encode ()
   "Encodes well-formatted text to WMO FM94 BUFR message."
   (interactive)
-  (let (bnam dnam)
+  (let (bnam dnam r)
     (setq inhibit-eol-conversion t)
     (setq bufr--cur_bit 0)
     (setq bufr--olist '())
@@ -1549,10 +1559,13 @@ buffer *B* plus `-encoded´.
 	      (kill-region bufr--start bufr--end))
 	    (insert (encode-coding-string (concat bufr--olist) 'iso-8859-1))
 	    ))
-      (error (message (format "%s" err))))
+      (error (setq r (format "%s" err))))
     ;; All encoding is done, switch to the buffer with binary data.
     (switch-to-buffer bufr--obuf)
     (goto-char bufr--start)
+    (if (equal r nil)
+	(message "all ok")
+      (message r))
     ))
 
 
