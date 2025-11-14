@@ -84,13 +84,11 @@ SCNTR: sub-centre."
 	  (push (format "%s/0/local/%d/%d/%d/codetables/" bufr--table-base lvers cntr scntr) tabfnlst)
 	  (push (format "%s/0/local/%d/%d/%d/sequence.def" bufr--table-base lvers cntr scntr) tabfnlst)
 	  (push (format "%s/0/local/%d/%d/%d/element.table" bufr--table-base lvers cntr scntr) tabfnlst)
-	  (push (format "%s/datacat.table" bufr--table-base) tabfnlst)
 	  )
 	;; master tables
 	(push (format "%s/0/wmo/%d/codetables/" bufr--table-base mvers) tabfnlst)
 	(push (format "%s/0/wmo/%d/sequence.def" bufr--table-base mvers) tabfnlst)
 	(push (format "%s/0/wmo/%d/element.table" bufr--table-base mvers) tabfnlst)
-	(push (format "%s/datacat.table" bufr--table-base) tabfnlst)
 	;; Read/parse table files
 	(message (format "Loading BUFR table files %s ..." tabstr))
 	;; Init table cache
@@ -101,20 +99,29 @@ SCNTR: sub-centre."
 	(setq bufr--tab_b (nth 1 (gethash tabstr bufr--tabcache)))  ; Table B
 	(setq bufr--tab_d (nth 2 (gethash tabstr bufr--tabcache)))  ; Table D
 	(setq bufr--tab_cf (nth 3 (gethash tabstr bufr--tabcache))) ; Code/flag tables
+	;; Table A - Data category
+	;; Hard-coded since usually not in eccodes table archive
+	(let ((a_buf '((0 . "Surface data - land") (1 . "Surface data - sea")
+		       (2 . "Vertical soundings (other than satellite)")
+		       (3 . "Vertical soundings (satellite)")
+		       (4 . "Single level upper-air data (other than satellite)")
+		       (5 . "Single level upper-air data (satellite)") (6 . "Radar data")
+		       (7 . "Synoptic features") (8 . "Physical/chemical constituents")
+		       (9 . "Dispersal and transport") (10 . "Radiological data")
+		       (11 . "BUFR tables, complete replacement or update")
+		       (12 . "Surface data (satellite)") (13 . "Forecasts") (14 . "Warnings")
+		       (20 . "Status information") (21 . "Radiances (satellite measured)")
+		       (22 . "Radar (satellite) but not altimeter and scatterometer")
+		       (23 . "Lidar (satellite)") (24 . "Scatterometry (satellite)")
+		       (25 . "Altimetry (satellite)") (26 . "Spectrometry (satellite)")
+		       (27 . "Gravity measurement (satellite)") (28 . "Precision orbit (satellite)")
+		       (29 . "Space environment (satellite)") (30 . "Calibration datasets (satellite)")
+		       (31 . "Oceanographic data") (101 . "Image data")
+		       (255 . "Other category, or local use")
+		       )))
+	  (dolist (row a_buf)
+	    (puthash (car row) (cdr row) bufr--tab_a)))
 	(while tabfnlst
-	  ;; Table A
-	  ;; Columns: code|name
-	  (setq filePath (pop tabfnlst))
-	  (when (file-readable-p filePath)
-	    (with-temp-buffer
-	      (insert-file-contents filePath)
-	      (let (row)
-		(dolist (line (split-string (buffer-string) "\n" t) row)
-		  (unless (equal (substring line 0 1) "#")
-		    (setq row (split-string (string-trim line) "|" t))
-		    (puthash (string-to-number (car row)) (cdr row) bufr--tab_a)
-		    ))
-		)))
 	  ;; Table B
 	  ;; Columns: code|abbreviation|type|name|unit|scale|reference|width|crex_unit|crex_scale|crex_width
 	  (setq filePath (pop tabfnlst))
@@ -141,8 +148,7 @@ SCNTR: sub-centre."
 			  "\"[0-9]+\" = \\[[0-9, \n]+?\\]\n" nil t))
 		(unless (equal pb nil)
 		  (setq foo (buffer-substring pa pb))
-		  (setq foo (replace-regexp-in-string "[\"[\n ]" "" foo))
-		  (setq foo (string-replace "]" "" foo))
+		  (setq foo (replace-regexp-in-string "[\"[\n ]\\|]" "" foo))
 		  (setq bar (split-string foo "="))
 		  (setq fxy (car bar))
 		  (setq seq (split-string (nth 1 bar) ","))
@@ -176,9 +182,9 @@ SCNTR: sub-centre."
 			    cflist)
 		      )))
 		(puthash fxy cflist bufr--tab_cf)
-		(setq cflist '())
-		(erase-buffer)
-		))))
+		(setq cflist '()))
+	      (erase-buffer)))
+	  )  ; while tabfnlst
 	(message "Table files loaded.")
 	)))
   nil)
@@ -189,12 +195,12 @@ SCNTR: sub-centre."
 
 (defun bufr--from-flat-bits (width)
   "Read WIDTH bits from current position."
-  (let (pval              ; value from point
-	(val 0)           ; buffer value for bit-collecting
-	(ub width)        ; bits remaining
+  (let (pval               ; value from point
+	(val 0)            ; buffer value for bit-collecting
+	(ub width)         ; bits remaining
 	(lb bufr--cur_bit) ; bits processed in current octet
-	nb                ; bits to process from current octet
-	rb)               ; rigth-most bit in current octet
+	nb                 ; bits to process from current octet
+	rb)                ; rigth-most bit in current octet
     (while (> ub 0)
       (setf pval (logand 255 (char-after)))
       (if (< (+ lb ub) 8)
@@ -233,6 +239,12 @@ AS=str: joined to a string."
 	  (forward-char))))
     r
     ))
+
+
+(defun bufr--num-to-hex (value)
+  (if (= (length value) 0)
+      "''"
+    (format "'%s'" (mapconcat (lambda (c) (format "%02x" (logand 255 c))) value " "))))
 
 
 (defun bufr--from-bits (subsidx width &optional as)
@@ -376,7 +388,7 @@ If END is nil just move the bit-pointer to the start of the next octet."
 
 (defun bufr--dec-sect-0to1 ()
   "Decoding metadata from sections 0 and 1."
-  (let (edition val txt sectstart sectlen s1sizes tab_cf_centers)
+  (let (edition val txt sectstart sectlen s1sizes)
     ;;
     ;; Section 0
     ;;
@@ -401,72 +413,78 @@ If END is nil just move the bit-pointer to the start of the next octet."
     (setq sectlen (bufr--from-bytes 3))
     (bufr--from-bytes 1)
     (if (= edition 4)
-	(setq s1sizes '(("centr" 2 "Centre")
-			("scntr" 2 "Sub-centre")
-			("upseq" 1 "Update sequence number")
-			("sect2" 1 "Section 2")
-			("cat" 1 "Data category")
-			("scat" 1 "Sub-category")
-			("lscat" 1 "Local sub-category")
-			("mvers" 1 "Master table version")
-			("lvers" 1 "Local table version")
-			("year" 2 "Year") ("month" 1 "Month") ("day" 1 "Day")
-			("hour" 1 "Hour") ("min" 1 "Minute") ("sec" 1 "Second")
-			))
+	(setq s1sizes '(("centr" . 2) ("scntr" . 2) ("upseq" . 1) ("sect2" . 1)
+			("cat" . 1) ("scat" . 1) ("lscat" . 1) ("mvers" . 1)
+			("lvers" . 1) ("year" . 2) ("month" . 1) ("day" . 1)
+			("hour" . 1) ("min" . 1) ("sec" . 1)))
       ;; Edition 3
       (progn
-	(setq s1sizes '(
-			("scntr" 1 "Sub-centre")
-			("centr" 1 "Centre")
-			("upseq" 1 "Update sequence number")
-			("sect2" 1 "Section 2")
-			("cat" 1 "Data category")
-			("scat" -1 "Sub-category")
-			("lscat" 1 "Local sub-category")
-			("mvers" 1 "Master table version")
-			("lvers" 1 "Local table version")
-			("year" 1 "Year") ("month" 1 "Month") ("day" 1 "Day")
-			("hour" 1 "Hour") ("min" 1 "Minute") ("sec" -1 "Second")
-			))
+	(setq s1sizes '(("scntr" . 1) ("centr" . 1) ("upseq" . 1) ("sect2" . 1)
+			("cat" . 1) ("scat" . 0) ("lscat" . 1) ("mvers" . 1)
+			("lvers" . 1) ("year" . 1) ("month" . 1) ("day" . 1)
+			("hour" . 1) ("min" . 1) ("sec" . 0)))
       	(puthash "scat" 0 bufr--meta)
 	(puthash "sec" 0 bufr--meta)
 	))
     (dolist (s1elem s1sizes)
       (cond
        ((equal (car s1elem) "sect2")
-	(puthash (car s1elem) (logand (ash (bufr--from-bytes (cadr s1elem)) -7) 1) bufr--meta)
+	(puthash (car s1elem) (logand (ash (bufr--from-bytes (cdr s1elem)) -7) 1) bufr--meta)
 	)
        ((and (equal (car s1elem) "year") (= edition 3))
-	(setf val (bufr--from-bytes (cadr s1elem)))
+	(setf val (bufr--from-bytes (cdr s1elem)))
 	(if (< val 50)
 	    (puthash (car s1elem) (+ 2000 val) bufr--meta)
 	  (puthash (car s1elem) (+ 1900 val) bufr--meta))
 	)
        (t
-	(puthash (car s1elem) (bufr--from-bytes (cadr s1elem)) bufr--meta)
+	(puthash (car s1elem) (bufr--from-bytes (cdr s1elem)) bufr--meta)
 	)))
     (setq txt (bufr--from-bytes (- (+ sectstart sectlen) (point)) 'str))
-    (if (< (length txt) 3)
-	(puthash "adpd" "" bufr--meta)
-      (puthash "adpd" txt bufr--meta))
+    (puthash "adpd" (bufr--num-to-hex txt) bufr--meta)
+    ))
+
+
+(defun bufr--dec-sect-prn1 ()
+  "Print metadata from section 1."
+  (let (val txt s1sizes tab_cf_centers)
+    (setq s1sizes '(("centr" . "Centre") ("scntr" . "Sub-centre")
+		    ("upseq" . "Update sequence number") ("sect2" . "Section 2 present")
+		    ("cat" . "Data category") ("scat" . "Sub-category")
+		    ("lscat" . "Local sub-category") ("mvers" . "Master table version")
+		    ("lvers" . "Local table version") ("year" . "Year") ("month" . "Month")
+		    ("day" . "Day") ("hour" . "Hour") ("min" . "Minute") ("sec" . "Second")
+		    ("adpd" . "ADP data")))
     (setq tab_cf_centers '(("centr" . "001035") ("scntr" . "001034")))
     (with-current-buffer bufr--dbuf
       (dolist (s1elem s1sizes)
 	(cond
 	 ((member (car s1elem) '("centr" "scntr"))
 	  (setf val (gethash (car s1elem) bufr--meta))
-	  (if (gethash "001035" bufr--tab_cf)
-	      (setq txt (list (cdr (assoc val (gethash (assoc (car s1elem) tab_cf_centers) bufr--tab_cf)))))
-	    (setq txt "---"))
-	  (insert (format "%-5s   %-22s: %s %s\n" (car s1elem) (caddr s1elem) val txt))
+	  (let (cf_cons)
+	    (setq cf_cons (gethash (cdr (assoc (car s1elem) tab_cf_centers)) bufr--tab_cf))
+	    (if cf_cons
+		(setq txt (cdr (assoc val cf_cons)))
+	      (setq txt "---")))
+	  (insert (format "%-5s   %-22s: %-3s %s\n"
+			  (car s1elem) (cdr s1elem) val txt))
 	  )
 	 ((equal (car s1elem) "cat")
           (setf val (gethash (car s1elem) bufr--meta))
 	  (setq txt (gethash val bufr--tab_a))
-	  (insert (format "%-5s   %-22s: %s %s\n" (car s1elem) (caddr s1elem) val txt))
+	  (insert (format "%-5s   %-22s: %-3s %s\n"
+			  (car s1elem) (cdr s1elem) val txt))
+	  )
+	 ((equal (car s1elem) "adpd")
+	  (setq txt (gethash (car s1elem) bufr--meta))
+	  (insert (format "%-5s   %-14s (% 3d B): %s\n"
+			  (car s1elem) (cdr s1elem)
+			  (length (split-string (substring txt 1 -1) " " t))
+			  txt))
 	  )
 	 (t
-	  (insert (format "%-5s   %-22s: %s\n" (car s1elem) (caddr s1elem) (gethash (car s1elem) bufr--meta)))
+	  (insert (format "%-5s   %-22s: %s\n"
+			  (car s1elem) (cdr s1elem) (gethash (car s1elem) bufr--meta)))
 	  )
 	 )
 	))))
@@ -477,20 +495,16 @@ If END is nil just move the bit-pointer to the start of the next octet."
   ;;
   ;; Section 2, if present
   ;;
-  (unless (= 0 (gethash "sect2" bufr--meta))
-    (let (sectlen txt)
+  (let (sectlen (txt ""))
+    (unless (= 0 (gethash "sect2" bufr--meta))
       (setf sectlen (bufr--from-bytes 3))
       (bufr--from-bytes 1)
       (setq txt (bufr--from-bytes (- sectlen 4) 'str))
-      (with-current-buffer bufr--dbuf
-	(insert
-	 (format "s2dat   Sec.2 data (% 3d bytes): '%s'\n"
-		 (- sectlen 4)
-		 (mapconcat (lambda (c)
-			      (format "%02x" (logand 255 c)))
-			    txt
-			    " "))))
-      ))
+      )
+    (with-current-buffer bufr--dbuf
+      (insert
+       (format "s2dat   Section 2 data (% 3d B): %s\n"
+	       (length txt) (bufr--num-to-hex txt)))))
   ;;
   ;; Section 3 - template data
   ;;
@@ -1197,12 +1211,11 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
     (beginning-of-line)
     (forward-line)
     ;; Section 1
-    (setq s1sizes '(("centr" . 2) ("scntr" . 2) ("upseq" . 1)
-		    ("sect2" . 1) ("cat" . 1) ("scat" . 1)
-		    ("lscat" . 1) ("mvers" . 1) ("lvers" . 1)
-		    ("year" . 2) ("month" . 1) ("day" . 1)
-		    ("hour" . 1) ("min" . 1) ("sec" . 1)
-		    ("adpd" . -1) ("edit" . -1) ))
+    (setq s1sizes '(("edit" . 0) ("centr" . 2) ("scntr" . 2) ("upseq" . 1)
+		    ("sect2" . 1) ("cat" . 1) ("scat" . 1) ("lscat" . 1)
+		    ("mvers" . 1) ("lvers" . 1) ("year" . 2) ("month" . 1)
+		    ("day" . 1) ("hour" . 1) ("min" . 1) ("sec" . 1)
+		    ("adpd" . 0) ))
     (when (eq (re-search-forward regex-line nil t) nil)
       (error "Not well-formatted text!"))
     (setq mgkey (match-string 1))
@@ -1236,15 +1249,14 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
        ((equal mgkey "adpd")
 	(if (> (length mgval) 2)
 	    (setq val (bufr--hex-to-num mgval))
-	  (setq val nil)))
+	  (setq val nil))
+	)
        ((equal mgkey "edit")
         (unless (= mgval 4)
           (error (format "Encoding BUFR edition '%s' not supported!" mgval))
           ))
        (t
-	(setq val (bufr--to-bytes
-		   (cdr (assoc mgkey s1sizes))
-		   mgval))))
+	(setq val (bufr--to-bytes (cdr s1elem) mgval))))
       (setq sectoctets (append sectoctets val))
       ) ;; end dolist
     (setq val (bufr--to-bytes 3 (+ (length sectoctets) 4)))
@@ -1497,6 +1509,7 @@ buffer *B* plus `-encoded´.
 				    (gethash "centr" bufr--meta)
       				    (gethash "scntr" bufr--meta)
        				    (gethash "lvers" bufr--meta))
+	    (bufr--dec-sect-prn1)
 	    ;; In current buffer decode BUFR sections with descriptor list
 	    ;; and subset data
 	    (setq r (bufr--dec-sect-2to5))
@@ -1555,8 +1568,8 @@ buffer *B* plus `-encoded´.
 	    (when (or (> bufr--end (point-max)) (= bufr--end -1))
 	      (setf bufr--end (point-max)))
 	    (goto-char bufr--start)
-	    (when (> bufr--end bufr--start)
-	      (kill-region bufr--start bufr--end))
+;	    (when (> bufr--end bufr--start)
+;	      (kill-region bufr--start bufr--end))
 	    (insert (encode-coding-string (concat bufr--olist) 'iso-8859-1))
 	    ))
       (error (setq r (format "%s" err))))
