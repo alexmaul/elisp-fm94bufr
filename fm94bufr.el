@@ -1050,10 +1050,10 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
           ;; If number equals "missing"
           (setq rval (- (ash 1 awidth) 1))
 	;; Else calculate return number
-	(setf rval (truncate (-
-			      (/ (string-to-number mgval)
-				 (expt 10 (- afactor)))
-			      aoffset))))
+	(setf rval (round (-
+			   (/ (string-to-number mgval)
+			      (expt 10 (- afactor)))
+			   aoffset))))
       )
      ((or (equal typ "table") (equal typ "flag"))
       (setf awidth (gethash "locwidth" bufr--modifier width))
@@ -1538,6 +1538,7 @@ buffer *B* plus `-encoded´.
 	    (bufr--dec-sect-prn1)
 	    ;; In current buffer decode BUFR sections with descriptor list
 	    ;; and subset data
+	    (message "Decoding BUFR data ...")
 	    (setq r (bufr--dec-sect-2to5))
 	    (setf bufr--end (point))))
       (error (setq r (format "%s" err))))
@@ -1585,6 +1586,7 @@ buffer *B* plus `-encoded´.
 	        		    (gethash "lvers" bufr--meta))
 	    ;; In current buffer decode BUFR sections with descriptor list
 	    ;; and subset data
+	    (message "Encoding BUFR data ...")
 	    (bufr--enc-sect-4)
 	    ;; Finalize BUFR octets, calculate total size
 	    (bufr--enc-sect-0fin))
