@@ -1,22 +1,30 @@
 ;;; fm94bufr.el --- BUFR Decoder/Encoder  -*- lexical-binding: t -*-
-;;
+
 ;;; Commentary:
-;; 
+
 ;; Decode/encode WMO FM94 BUFR message.
+;;
+;; See `bufr-help`.
 ;;
 ;; Environment variable $BUFR_TABLES must point to a
 ;; directory where table files (eccodes-style) are located.
-;;
-;; (C) 2025 alexmaul
-;;
+
+;; Author: Alex Maul <alexmaul>
+
+;; Created: 2025
+
+;; Keywords: data files weather fm94
+
 ;;; Licence:
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
 ;; the Free Software Foundation, either version 3 of the License, or
 ;; (at your option) any later version.
-;;
+
 ;;; Code:
-;;
+
+(require 'subr-x)
+
 ;;;; Global variables
 ;;
 ;;;;; Table store
@@ -256,11 +264,21 @@ compression is used, set to -1 if no compression is used."
   (let ((val 0))
     (if (= subsidx -1)
 	;; Read bits without compression
-	(setq val (bufr--from-flat-bits width))
+	(if (eq as 'str)
+	    (let ((buf '()))
+	      (dotimes (_ (/ width 8))
+		(push (bufr--from-flat-bits 8) buf))
+	      (setq val (reverse buf)))
+	  (setq val (bufr--from-flat-bits width)))
       ;; Read bits from compressed data section
       (let ((R0 0) (nbinc 0) (In 0))
 	;; base reference value
-	(setf R0 (bufr--from-flat-bits width))
+	(if (eq as 'str)
+	    (let ((buf '()))
+	      (dotimes (_ (/ width 8))
+		(push (bufr--from-flat-bits 8) buf))
+	      (setq R0 (reverse buf)))
+	  (setf R0 (bufr--from-flat-bits width)))
 	;; amount of bits for each increment value
 	(setf nbinc (bufr--from-flat-bits 6))
 	(when (eq as 'str)
@@ -272,34 +290,31 @@ compression is used, set to -1 if no compression is used."
 	    ;; read nbic bits from previous subsets
 	    (bufr--from-flat-bits (* nbinc subsidx))
 	    ;; read nbic bits from current subset
-	    (setf In (bufr--from-flat-bits nbinc))
+	    (if (eq as 'str)
+		(let ((buf '()))
+		  (dotimes (_ (/ nbinc 8))
+		    (push (bufr--from-flat-bits 8) buf))
+		  (setq In (reverse buf)))
+	      (setf In (bufr--from-flat-bits nbinc)))
 	    ;; read remaining bits
 	    (bufr--from-flat-bits (* nbinc
 				     (-
 				      (gethash "subs" bufr--meta)
 				      subsidx
 				      1)))
-	    (if (= In (- (ash 1 nbinc) 1))
-		;; if In equals "missing"
-		(setq val (- (ash 1 width) 1))
-	      ;; add base reference to reduced value
-	      (setf val (+ R0 In)))
+	    (if (eq as 'str)
+		(setf val In)
+	      (progn
+		(if (= In (- (ash 1 nbinc) 1))
+		    ;; if In equals "missing"
+		    (setq val (- (ash 1 width) 1))
+		  ;; add base reference to reduced value
+		  (setf val (+ R0 In)))))
 	    ))
 	))
-    ;; convert (and transpose) the number to string, if requested
     (when (eq as 'str)
-      (let ((chrlst '()) cval (i 0))
-	(while (< i width)
-	  ;; interprete each octet from integer as char, collect these
-	  (setf cval (logand 255 (ash val (- i))))
-	  (if (/= cval 0)
-	      (push cval chrlst)
-	    ;; Replace NUL characters with SPC.
-	    (push 32 chrlst))
-	  (setf i (+ i 8)))
-	;; concat all chars and decode from Latin1 to UTF8
-	(setq val (decode-coding-string (concat chrlst) 'latin-1))
-	))
+      ;; Concat character list and decode from Latin1 to UTF8
+      (setq val (decode-coding-string (concat val) 'latin-1)))
     val))
 
 
@@ -918,19 +933,23 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 (defun bufr--enc-values (sectvalues)
   "Encode a list of values SECTVALUES, either uncompressed or compressed."
   ;; SECTVALUES looks like:
-  ;; without compression: ((width.value) ...)
+  ;; without compression: (((width.typ) value) ...)
   ;; with compression   : (((width.typ) valueS1 valueS2 ...) ...)
   (let ((sectoctets'()))
     (if (= (gethash "comp" bufr--meta) 0)
 	;; Write plain, uncompressed bits.
-	(let (rval awidth)
-	  (dolist (con sectvalues)
-	    (setf awidth (car con))
-	    (setf rval (cdr con))
-	    (setq sectoctets (bufr--to-flat-bits sectoctets rval awidth))
+	(let (rval awidth typ)
+	  (dolist (valset sectvalues)
+	    (setf awidth (caar valset))
+	    (setf typ (cdar valset))
+	    (setf rval (cdr valset))
+	    (if (equal typ "string")
+		(dolist (c rval)
+		  (setq sectoctets (bufr--to-flat-bits sectoctets c 8)))
+	      (setq sectoctets (bufr--to-flat-bits sectoctets rval awidth)))
 	    ))
       ;; Write compressed bits
-      (let (R0 Vx Vxr awidth typ)
+      (let (awidth typ)
 	(dolist (valset sectvalues)
 	  (setf awidth (car (car valset)))
 	  (when awidth
@@ -942,65 +961,64 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	    ;; or to a number if there are -- only in this case the
 	    ;; values are encoded.
 	    (setf typ (cdr (car valset)))
-	    (setf R0 (apply #'min (cdr valset)))  ; reference value
-	    (setf Vx (apply #'max (cdr valset)))  ; max value, incl. "missing"
-	    (setf Vxr (apply #'max (mapcar        ; max value, without "missing"
-				    (lambda (x)
-				      (if (eq x (- (ash 1 awidth) 1)) 0 x))
-				    (cdr valset))))
-	    (if (= R0 Vx)
-		;; All values are the same
-		(progn
+	    ;; Strings are handled differenetly
+	    (if (equal typ "string")
+		(let ((R0 0) (nbinc (/ awidth 8)))
 		  (setq sectoctets (bufr--to-flat-bits sectoctets R0 awidth))
-		  (setq sectoctets (bufr--to-flat-bits sectoctets 0 6)))
-	      ;; Values are different
-	      (let ((nbinc 0) (listIn '()) (bufIn '()) In maxIn)
-		(when (equal typ "string")
-		  (setf R0 0))
-		;; Calculate bit width necessary for the maximum difference
-		(setf maxIn (- Vxr R0))
-		(while (> maxIn 0)
-		  (setf maxIn (ash maxIn -1))
-		  (setf nbinc (1+ nbinc)))
-		;; Go through all values ...
-		(dolist (val (cdr valset))
-		  (setf In (- val R0))
-		  ;; if a difference value In has set all bits of nbinc length
-		  ;; increase nbinc
-		  (when (= In (- (ash 1 nbinc) 1))
-		    (setf nbinc (1+ nbinc)))
-		  ;; collect value or nil if the value equals "missing"
-		  (if (= val (- (ash 1 awidth) 1))
-		      (push nil bufIn)
-		    (push In bufIn)))
-		;; Replace collected nil-values by a difference with all bits
-		;; set to 1
-		(dolist (In bufIn)
-		  (if (eq In nil)
-		      (push (- (ash 1 nbinc) 1) listIn)
-		    (push In listIn)))
-		;; Write bits of reference value R0
-		(setq sectoctets (bufr--to-flat-bits sectoctets R0 awidth))
-		(if (equal typ "string")
+		  (setq sectoctets (bufr--to-flat-bits sectoctets nbinc 6))
+		  (dolist (In (cdr valset))
+		    (dolist (c In)
+		      (setq sectoctets (bufr--to-flat-bits sectoctets c 8))
+		      )))
+	      ;; All non-string values:
+	      (let (R0 Vx Vxr)
+		(setf R0 (apply #'min (cdr valset)))  ; reference value
+		(setf Vx (apply #'max (cdr valset)))  ; max value, incl. "missing"
+		(setf Vxr (apply #'max (mapcar        ; max value, without "missing"
+					(lambda (x)
+					  (if (eq x (- (ash 1 awidth) 1)) 0 x))
+					(cdr valset))))
+		(if (= R0 Vx)
+		    ;; All values are the same
 		    (progn
-		      ;; Write bits of nbinc for type "string", where nbinc
-		      ;; is number of chararacters.
-		      (when (/= (truncate (/ nbinc 8.0)) (/ nbinc 8.0))
-			(setf nbinc (* (1+ (truncate (/ nbinc 8.0))) 8)))
+		      (setq sectoctets (bufr--to-flat-bits sectoctets R0 awidth))
+		      (setq sectoctets (bufr--to-flat-bits sectoctets 0 6)))
+		  ;; Values are different
+		  (let ((nbinc 0) (listIn '()) (bufIn '()) In maxIn)
+		    ;; Calculate bit width necessary for the maximum difference
+		    (setf maxIn (- Vxr R0))
+		    (while (> maxIn 0)
+		      (setf maxIn (ash maxIn -1))
+		      (setf nbinc (1+ nbinc)))
+		    ;; Go through all values ...
+		    (dolist (val (cdr valset))
+		      (setf In (- val R0))
+		      ;; if a difference value In has set all bits of nbinc length
+		      ;; increase nbinc
+		      (when (= In (- (ash 1 nbinc) 1))
+			(setf nbinc (1+ nbinc)))
+		      ;; collect value or nil if the value equals "missing"
+		      (if (= val (- (ash 1 awidth) 1))
+			  (push nil bufIn)
+			(push In bufIn)))
+		    ;; Replace collected nil-values by a difference with all bits
+		    ;; set to 1
+		    (dolist (In bufIn)
+		      (if (eq In nil)
+			  (push (- (ash 1 nbinc) 1) listIn)
+			(push In listIn)))
+		    ;; Write bits of reference value R0
+		    (setq sectoctets (bufr--to-flat-bits sectoctets R0 awidth))
+		    ;; Write bits of nbinc for all other types
+		    (setq sectoctets (bufr--to-flat-bits sectoctets nbinc 6))
+		    ;; Write bits of all increment values
+		    (while (not (eq listIn nil))
 		      (setq sectoctets (bufr--to-flat-bits
 					sectoctets
-					(/ nbinc 8)
-					6)))
-		  ;; Write bits of nbinc for all other types
-		  (setq sectoctets (bufr--to-flat-bits sectoctets nbinc 6)))
-		;; Write bits of all increment values
-		(while (not (eq listIn nil))
-		  (setq sectoctets (bufr--to-flat-bits
-				    sectoctets
-				    (pop listIn)
-				    nbinc))
-		  ))))
-	  )))
+					(pop listIn)
+					nbinc))
+		      ))))
+	      )))))
     sectoctets
     ))
 
@@ -1047,15 +1065,22 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
       (setf awidth (gethash "newstrlen" bufr--modifier width))
       (setf awidth (gethash "locwidth" bufr--modifier awidth))
       (if (eq mgval nil)
-          (setq rval (- (ash 1 awidth) 1))
-	(setf rval (bufr--str-to-num mgval (/ awidth 8))))
-      ))
+          (setq rval (make-list (/ awidth 8) ?\377))
+	(let ((foo '()) (cwidth (/ awidth 8)))
+	  (when (> cwidth (length mgval))
+	    (setq mgval (concat mgval (make-string (- cwidth (length mgval)) ?\40))))
+	  (setq mgval (substring mgval 0 cwidth))
+	  (dotimes (i (length mgval))
+	    (push (aref mgval i) foo))
+	  (setq rval (reverse foo))))
+     ))
     (if (= (gethash "comp" bufr--meta) 0)
-	;; Without compression, a simple list: ((width.value) ...)
+	;; Without compression, 1-dim list:
+	;; (((width.typ) value) ...)
 	(progn
 	  (when qwidth
-	    (push (cons qwidth qval) sectrevvalues))
-	  (push (cons awidth rval) sectrevvalues))
+	    (push (cons (cons qwidth "qual") qval) sectrevvalues))
+	  (push (cons (cons awidth typ) rval) sectrevvalues))
       (progn
 	;; With compression, 2-dim list: (Si=subset i, Dj=descriptor j)
 	;; (((widthD1.typD1) valueS1D1 valueS2D1 ...)
@@ -1264,10 +1289,11 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
     (setq mgkey (car lastmg))
     (setq mgval (cdr lastmg))
     ;; Section 2
-    (when (and (equal mgkey "s2dat") (= s2present 1))
-      (setq sectoctets (bufr--hex-to-num mgval))
-      (setq val (bufr--to-bytes 3 (+ (length sectoctets) 4)))
-      (setq bufr--olist (append bufr--olist val (list 0) sectoctets))
+    (when (equal mgkey "s2dat")
+      (when (= s2present 1)
+	(setq sectoctets (bufr--hex-to-num mgval))
+	(setq val (bufr--to-bytes 3 (+ (length sectoctets) 4)))
+	(setq bufr--olist (append bufr--olist val (list 0) sectoctets)))
       (re-search-forward regex-line)
       (setq mgkey (match-string 1))
       (setq mgval (match-string 2))
@@ -1545,7 +1571,7 @@ buffer *B* plus `-encoded´.
     (setq bufr--dbuf (current-buffer))
     (when (eq bufr--obuf nil)
       (setq dnam (buffer-name))
-      (setq bnam (concat (string-replace "-decoded" "" dnam) "-encoded"))
+      (setq bnam (concat (replace-regexp-in-string "-decoded" "" dnam) "-encoded"))
       (setq bufr--obuf (get-buffer-create bnam)))
     (condition-case err
      	(progn
@@ -1568,8 +1594,8 @@ buffer *B* plus `-encoded´.
 	    (when (or (> bufr--end (point-max)) (= bufr--end -1))
 	      (setf bufr--end (point-max)))
 	    (goto-char bufr--start)
-;	    (when (> bufr--end bufr--start)
-;	      (kill-region bufr--start bufr--end))
+					;	    (when (> bufr--end bufr--start)
+					;	      (kill-region bufr--start bufr--end))
 	    (insert (encode-coding-string (concat bufr--olist) 'iso-8859-1))
 	    ))
       (error (setq r (format "%s" err))))
