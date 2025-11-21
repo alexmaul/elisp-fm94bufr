@@ -102,11 +102,10 @@ SCNTR: sub-centre."
 	;; Init table cache
 	(dotimes (_ 4)
 	  (push (make-hash-table :test 'equal) foo))
-	(puthash tabstr foo bufr--tabcache)
-	(setq bufr--tab_a (nth 0 (gethash tabstr bufr--tabcache)))  ; Table A
-	(setq bufr--tab_b (nth 1 (gethash tabstr bufr--tabcache)))  ; Table B
-	(setq bufr--tab_d (nth 2 (gethash tabstr bufr--tabcache)))  ; Table D
-	(setq bufr--tab_cf (nth 3 (gethash tabstr bufr--tabcache))) ; Code/flag tables
+	(setq bufr--tab_a (nth 0 foo))  ; Table A
+	(setq bufr--tab_b (nth 1 foo))  ; Table B
+	(setq bufr--tab_d (nth 2 foo))  ; Table D
+	(setq bufr--tab_cf (nth 3 foo)) ; Code/flag tables
 	;; Table A - Data category
 	;; Hard-coded since usually not in eccodes table archive
 	(let ((a_buf '((0 . "Surface data - land") (1 . "Surface data - sea")
@@ -193,6 +192,7 @@ SCNTR: sub-centre."
 		(setq cflist '()))
 	      (erase-buffer)))
 	  )  ; while tabfnlst
+	(puthash tabstr foo bufr--tabcache)
 	(message "Table files loaded.")
 	)))
   nil)
@@ -226,6 +226,22 @@ SCNTR: sub-centre."
       (setf val (logior val (logand (ash pval (- (- 8 rb))) (- (ash 1 nb) 1)))))
     (setf bufr--cur_bit lb)
     val
+    ))
+
+
+(defun bufr--skip-flat-bits (width)
+  "Skip WIDTH bits."
+  (let ((ub width) (lb bufr--cur_bit))
+    (if (< (+ lb ub) 8)
+	(setf lb (+ lb ub))
+      (progn
+	(while (> ub (- 8 lb))
+	  (forward-char)
+	  (setf ub (- ub 8))
+	  ))
+      (setf lb (+ lb ub))
+      )
+    (setf bufr--cur_bit lb)
     ))
 
 
@@ -287,8 +303,8 @@ compression is used, set to -1 if no compression is used."
 	    ;; All values of I are equal to R0, all In are omitted
 	    (setf val R0)
 	  (progn
-	    ;; read nbic bits from previous subsets
-	    (bufr--from-flat-bits (* nbinc subsidx))
+	    ;; read "nbic * this_subset" bits from previous subsets
+	    (bufr--skip-flat-bits (* nbinc subsidx))
 	    ;; read nbic bits from current subset
 	    (if (eq as 'str)
 		(let ((buf '()))
@@ -297,7 +313,7 @@ compression is used, set to -1 if no compression is used."
 		  (setq In (reverse buf)))
 	      (setf In (bufr--from-flat-bits nbinc)))
 	    ;; read remaining bits
-	    (bufr--from-flat-bits (* nbinc
+	    (bufr--skip-flat-bits (* nbinc
 				     (-
 				      (gethash "subs" bufr--meta)
 				      subsidx
