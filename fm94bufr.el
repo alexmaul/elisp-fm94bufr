@@ -1,25 +1,19 @@
-;;; fm94bufr.el --- BUFR Decoder/Encoder  -*- lexical-binding: t -*-
+;;; fm94bufr.el --- FM94-BUFR Decoder/Encoder  -*- lexical-binding: t -*-
+
+;; Copyright: Deutscher Wetterdienst, 2025 <https://www.dwd.de>
+;; Author: Alex Maul <alexmaul>
+;; Version: 1.0
+;; Created: 2025
+;; Keywords: data files weather wmo fm94
 
 ;;; Commentary:
 
-;; Decode/encode WMO FM94 BUFR message.
+;; Decode/encode WMO FM94-BUFR message.
 ;;
 ;; See `bufr-help`.
 ;;
 ;; Environment variable $BUFR_TABLES must point to a
 ;; directory where table files (eccodes-style) are located.
-
-;; Author: Alex Maul <alexmaul>
-
-;; Created: 2025
-
-;; Keywords: data files weather fm94
-
-;;; Licence:
-;; This program is free software: you can redistribute it and/or modify
-;; it under the terms of the GNU General Public License as published by
-;; the Free Software Foundation, either version 3 of the License, or
-;; (at your option) any later version.
 
 ;;; Code:
 
@@ -337,7 +331,7 @@ compression is used, set to -1 if no compression is used."
 (defun bufr--get-value (subsidx desc typ factor offset width)
   "Reading bits, and transforming interger values accordingly.
 Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
-  (let (rval (accu '()) (qual nil) val awidth afactor aoffset)
+  (let (rval (accu '()) (qual nil) val awidth)
     (unless (or (equal (substring desc 0 3) "031")
 		(= 0 (length (gethash "quality" bufr--modifier))))
       ;; Read and print associated data quality.
@@ -351,31 +345,32 @@ Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
       ;; Read integer and float numbers, apply various modifiers
       (setf awidth (+ width (nth 0 (gethash "change" bufr--modifier))))
       (setf awidth (gethash "locwidth" bufr--modifier awidth))
-      (setf afactor (+ factor (nth 1 (gethash "change" bufr--modifier))))
-      (setf aoffset (gethash desc (gethash "newreflst" bufr--modifier) offset))
-      (setf aoffset (* aoffset (nth 2 (gethash "change" bufr--modifier))))
       (setf val (bufr--from-bits subsidx awidth))
       (if (= val (- (ash 1 awidth) 1))
 	  ;; If number equals "missing"
 	  (setq rval nil)
 	;; else calculate return number
-	(setf rval (* (+ val aoffset) (expt 10 (- afactor)))))
+	(let (afactor aoffset)
+	  (setf afactor (+ factor (nth 1 (gethash "change" bufr--modifier))))
+	  (setf aoffset (gethash desc (gethash "newreflst" bufr--modifier) offset))
+	  (setf aoffset (* aoffset (nth 2 (gethash "change" bufr--modifier))))
+	  (setf rval (* (+ val aoffset) (expt 10 (- afactor))))))
       )
      ((equal typ "table")
       ;; Read number and look up in CF table, return "single entry"
-      (setf width (gethash "locwidth" bufr--modifier width))
-      (setf val (bufr--from-bits subsidx width))
+      (setf awidth (gethash "locwidth" bufr--modifier width))
+      (setf val (bufr--from-bits subsidx awidth))
       (setq rval (format "%s %s"
 			 val
 			 (list (cdr (assoc val (gethash desc bufr--tab_cf))))))
       )
      ((equal typ "flag")
       ;; Read number ab look up in CF table, join results in list
-      (setf width (gethash "locwidth" bufr--modifier width))
-      (setf val (bufr--from-bits subsidx width))
+      (setf awidth (gethash "locwidth" bufr--modifier width))
+      (setf val (bufr--from-bits subsidx awidth))
       (let ((mval val))
-	(when (= val (- (ash 1 width) 1))
-	  (setq mval (ash 1 (1- width))))
+	(when (= val (- (ash 1 awidth) 1))
+	  (setq mval (ash 1 (1- awidth))))
 	(dolist (elt (gethash desc bufr--tab_cf) accu)
  	  (when (> (logand mval (car elt)) 0)
 	    (push (cdr elt) accu))))
@@ -386,7 +381,7 @@ Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
       (setf awidth (gethash "newstrlen" bufr--modifier width))
       (setf awidth (gethash "locwidth" bufr--modifier awidth))
       (setq rval (bufr--from-bits subsidx awidth 'str))
-      ;; return nil if all chars equal 0xFF
+      ;; Return nil if all chars equal 0xFF
       (when (equal rval (make-string (length rval) ?\377))
 	(setq rval nil))
       ))
@@ -404,6 +399,7 @@ BUFR edition and remaining octets in a section.
 If END is nil just move the bit-pointer to the start of the next octet."
   (if (eq end nil)
       (progn
+					; FIXME forward only if cur-bit!=0 ???
 	(setf bufr--cur_bit 0)
 	(forward-char))
     (let (dist (here (point)))
@@ -1362,7 +1358,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
   "Encoding data section 4."
   (let (desc mgval qual f x y
 	     (descidx 0) (sectoctets '()) (sectvalues '()) sectlen
-	     (regex-line "^\\([0-9]\\{6\\}\\) +[^:]+: \\(?:(q=\\([0-9]+\\))\\)?\\(.+\\)$"))
+	     (regex-line "^\\([0-9]\\{6\\}\\) +[^:]*: \\(?:(q=\\([0-9]+\\)) \\)?\\(.+\\)$"))
     ;; Without compression SECTOCTETS is one-dimensional, all values
     ;; consecutive in one list.
     ;; With compression (see BUFR--META{"comp"}) it is two-dimensional:
@@ -1612,13 +1608,14 @@ buffer *B* plus `-encoded´.
 	    (when (or (> bufr--end (point-max)) (= bufr--end -1))
 	      (setf bufr--end (point-max)))
 	    (goto-char bufr--start)
-					;	    (when (> bufr--end bufr--start)
-					;	      (kill-region bufr--start bufr--end))
+	    (when (> bufr--end bufr--start)
+	      (kill-region bufr--start bufr--end))
 	    (insert (encode-coding-string (concat bufr--olist) 'iso-8859-1))
 	    ))
       (error (setq r (format "%s" err))))
     ;; All encoding is done, switch to the buffer with binary data.
     (switch-to-buffer bufr--obuf)
+    (set-buffer-file-coding-system 'raw-text)
     (goto-char bufr--start)
     (if (equal r nil)
 	(message "all ok")
