@@ -345,7 +345,7 @@ Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
       ;; Read integer and float numbers, apply various modifiers
       (setf awidth (+ width (nth 0 (gethash "change" bufr--modifier))))
       (setf awidth (gethash "locwidth" bufr--modifier awidth))
-      (setf val (bufr--from-bits subsidx awidth))
+      (setf val (bufr--from-bits subsidx awidth))x
       (if (= val (- (ash 1 awidth) 1))
 	  ;; If number equals "missing"
 	  (setq rval nil)
@@ -398,8 +398,7 @@ Moves point to END (end-of-section) if needed, depending on
 BUFR edition and remaining octets in a section.
 If END is nil just move the bit-pointer to the start of the next octet."
   (if (eq end nil)
-      (progn
-					; FIXME forward only if cur-bit!=0 ???
+      (when (> bufr--cur_bit 0)
 	(setf bufr--cur_bit 0)
 	(forward-char))
     (let (dist (here (point)))
@@ -407,9 +406,9 @@ If END is nil just move the bit-pointer to the start of the next octet."
       (if (< dist 0)
 	  (progn
 	    (backward-char dist)
-	    (bufr--debug "--------------------------- Error in sect-length: " dist)
-	    )
+	    (bufr--debug "--------------------------- Error in sect-length: " dist))
 	(forward-char dist))
+      (setf bufr--cur_bit 0)
       )))
 
 
@@ -535,7 +534,7 @@ If END is nil just move the bit-pointer to the start of the next octet."
   ;;
   ;; Section 3 - template data
   ;;
-  (let (sectstart sectlen txt val (desclst '()) f x y)
+  (let (sectstart sectlen txt val (desclst '()))
     (setf sectstart (point))
     (setf sectlen (bufr--from-bytes 3))
     (bufr--from-bytes 1)
@@ -543,21 +542,21 @@ If END is nil just move the bit-pointer to the start of the next octet."
     (setf val (bufr--from-bytes 1))
     (puthash "obs" (ash (logand val 128) -7) bufr--meta)
     (puthash "comp" (ash (logand val 64) -6) bufr--meta)
+    ;; Collect list of unexpanded descriptors
     (while (< (point) (- (+ sectstart sectlen) 1))
-      ;; Collect list of unexpanded descriptors
       (setf val (bufr--from-bytes 2))
-      (setf f (ash val -14))
-      (setf x (logand (ash val -8) 63))
-      (setf y (logand val 255))
-      (setq txt (format "%d%02d%03d" f x y))
+      (setq txt (format "%d%02d%03d"
+			(ash val -14)
+			(logand (ash val -8) 63)
+			(logand val 255)))
       (push txt desclst))
     (puthash "udesc" (reverse desclst) bufr--meta)
     (with-current-buffer bufr--dbuf
-					; TODO compact
-      (insert (format "%-5s   Subsets               : %s\n" "subs" (gethash "subs" bufr--meta)))
-      (insert (format "%-5s   Observed data         : %s\n" "obs" (gethash "obs" bufr--meta)))
-      (insert (format "%-5s   Compression           : %s\n" "comp" (gethash "comp" bufr--meta)))
-      (insert (format "%-5s   Unexpanded descriptors: %s\n" "udesc" (gethash "udesc" bufr--meta))))
+      (dolist (kv '(("subs" . "Subsets")
+		    ("obs" . "Observed data")
+		    ("comp" . "Compression")
+		    ("udesc" . "Unexpanded descriptors")))
+	(insert (format "%-5s   %-22s: %s\n" (car kv) (cdr kv) (gethash (car kv) bufr--meta)))))
     (bufr--get-padding (+ sectstart sectlen))
     )
   ;;
@@ -594,9 +593,7 @@ If END is nil just move the bit-pointer to the start of the next octet."
 	  (bufr--dec-loop sectend subsidx stack)
 	  (goto-char comploopstart)
 	  (setf bufr--cur_bit 0))))
-    (when (> bufr--cur_bit 0)
-      ;; Padding bits to end section on a full octet
-      (bufr--get-padding nil))
+    ;; Padding bits to end section on a full octet
     (bufr--get-padding (+ sectstart sectlen))
     )
   ;;
