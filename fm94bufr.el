@@ -331,21 +331,21 @@ compression is used, set to -1 if no compression is used."
 (defun bufr--get-value (subsidx desc typ factor offset width)
   "Reading bits, and transforming interger values accordingly.
 Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
-  (let (rval (accu '()) (qual nil) val awidth)
+  (let (rval (accu '()) (qual '()) val awidth)
     (unless (or (equal (substring desc 0 3) "031")
 		(= 0 (length (gethash "quality" bufr--modifier))))
       ;; Read and print associated data quality.
       ;; qual is list of bit-width, car of "quality" is the latest
       ;; and significant.
-      (setf qual (bufr--from-bits
-		  subsidx
-		  (car (gethash "quality" bufr--modifier)))))
+      (setq qual (mapcar
+		  (lambda (qw) (bufr--from-bits subsidx qw))
+		  (gethash "quality" bufr--modifier) )))
     (cond
      ((or (equal typ "long") (equal typ "double"))
       ;; Read integer and float numbers, apply various modifiers
       (setf awidth (+ width (nth 0 (gethash "change" bufr--modifier))))
       (setf awidth (gethash "locwidth" bufr--modifier awidth))
-      (setf val (bufr--from-bits subsidx awidth))x
+      (setf val (bufr--from-bits subsidx awidth))
       (if (= val (- (ash 1 awidth) 1))
 	  ;; If number equals "missing"
 	  (setq rval nil)
@@ -771,14 +771,12 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
       (setq a (gethash "quality" bufr--modifier))
       (if (= y 0)
 	  ;; yyy=000 removes quality information last added.
-	  (pop a)
-	;; when yyy>0
-	(if (= 0 (length a))
-	    (push y a)             ; push first element
-	  (push (+ y (car a)) a))  ; add previous qual to y, then push
+	  (setq a (butlast a))
+	;; else push first element
+	(setq a (append a (list y)))
 	)
       (puthash "quality" a bufr--modifier)
-      (setq r (cons "quality information, set width" (car a)))
+      (setq r (cons "quality information, set width" a))
       )
      ((= x 5)
       ;; YYY characters (CCITT International Alphabet No. 5) are
@@ -844,7 +842,9 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	(setq utxt "        ")
       (setq utxt (format "[%6s]" unit)))
     (unless (equal qual nil)
-      (setq qtxt (format "(q=%d) " qual)))
+      (setq qtxt (format "(q=%s) "
+			 (mapconcat (lambda (x) (format "%d" x)) qual ",")
+			 )))
     (with-current-buffer bufr--dbuf
       (insert (format "%s  %-50.50s %s: %s%-10s\n" desc name utxt qtxt vtxt)))
     ))
@@ -1035,16 +1035,18 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 (defun bufr--set-value
     (sectrevvalues subsidx descidx desc typ factor offset width mgval qual)
   "Transforming values accordingly."
-  (let ((qwidth nil) (qval nil)  ; width and value for assoc. quality
-	rval (awidth width)      ; width and value for data
-	(afactor 0) (aoffset 0)) ; scale and ref-value, modifier applied
+  (let ((quallst '())             ; assoc.quality string splitted
+	(qwidth nil) (qval 0)     ; width and value for assoc. quality
+	rval (awidth width)       ; width and value for data
+	(afactor 0) (aoffset 0))  ; scale and ref-value, modifier applied
     (unless (or (equal (substring desc 0 3) "031")
 		(= 0 (length (gethash "quality" bufr--modifier))))
       ;; Associated data quality. (Never for class=31)
-      ;; "quality" is list of bit-width, car is the latest and significant.
-      (setf qwidth (car (gethash "quality" bufr--modifier)))
-      (setf qval (string-to-number qual))
-      )
+      (setf qwidth (apply '+ (gethash "quality" bufr--modifier)))
+      (setq quallst (split-string qual ","))
+      (dolist (qw (gethash "quality" bufr--modifier))
+	(setf qval (ash qval qw))
+	(setf qval (logior qval (string-to-number (pop quallst))))))
     (cond
      ((or (equal typ "long") (equal typ "double"))
       ;; Read integer and float numbers
@@ -1173,11 +1175,9 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
       (setq a (gethash "quality" bufr--modifier))
       (if (= y 0)
 	  ;; yyy=000 removes quality information last added.
-	  (pop a)
-	;; when yyy>0
-	(if (= 0 (length a))
-	    (push y a)             ; push first element
-	  (push (+ y (car a)) a))  ; add previous qual to y, then push
+	  (setq a (butlast a))
+	;; when yyy>0 
+	(setq a (append a (list y)))
 	)
       (puthash "quality" a bufr--modifier)
       )
@@ -1355,7 +1355,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
   "Encoding data section 4."
   (let (desc mgval qual f x y
 	     (descidx 0) (sectoctets '()) (sectvalues '()) sectlen
-	     (regex-line "^\\([0-9]\\{6\\}\\) +[^:]*: \\(?:(q=\\([0-9]+\\)) \\)?\\(.+\\)$"))
+	     (regex-line "^\\([0-9]\\{6\\}\\) +[^:]*: \\(?:(q=\\([0-9,]+\\)) \\)?\\(.+\\)$"))
     ;; Without compression SECTOCTETS is one-dimensional, all values
     ;; consecutive in one list.
     ;; With compression (see BUFR--META{"comp"}) it is two-dimensional:
