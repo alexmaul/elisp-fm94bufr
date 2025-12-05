@@ -36,11 +36,14 @@
 (defvar bufr--end -1)
 (defvar bufr--cur_bit 0)
 (defvar bufr--meta (make-hash-table :test 'equal))
+(defvar bufr--backref-record '())       ; collects descr for bit-maps
+(defvar bufr--backref-recording t)      ; do collect for bit-maps?
+(defvar bufr--backref-stack '())
 (defvar bufr--modifier (make-hash-table :test 'equal))
 					; "change"->(width factor offset)
-(defvar bufr--obuf nil)                  ; emacs buffer with original or new BUFR
-(defvar bufr--dbuf nil)                  ; emacs buffer for decoded output
-(defvar bufr--olist '())                 ; character codepoint list for encoding
+(defvar bufr--obuf nil)                 ; emacs buffer with original or new BUFR
+(defvar bufr--dbuf nil)                 ; emacs buffer for decoded output
+(defvar bufr--olist '())                ; character codepoint list for encoding
 
 
 ;;
@@ -328,10 +331,10 @@ compression is used, set to -1 if no compression is used."
     val))
 
 
-(defun bufr--get-value (subsidx desc typ factor offset width)
+(defun bufr--get-value (subsidx desc typ factor offset width wof-as-is)
   "Reading bits, and transforming interger values accordingly.
 Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
-  (let (rval (accu '()) (qual '()) val awidth)
+  (let (rval (accu '()) (qual '()) val awidth (afactor 0) (aoffset 0))
     (unless (or (equal (substring desc 0 3) "031")
 		(= 0 (length (gethash "quality" bufr--modifier))))
       ;; Read and print associated data quality.
@@ -343,22 +346,29 @@ Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
     (cond
      ((or (equal typ "long") (equal typ "double"))
       ;; Read integer and float numbers, apply various modifiers
-      (setf awidth (+ width (nth 0 (gethash "change" bufr--modifier))))
-      (setf awidth (gethash "locwidth" bufr--modifier awidth))
+      (if wof-as-is
+	  (setf awidth width)
+	(progn
+	  (setf awidth (+ width (nth 0 (gethash "change" bufr--modifier))))
+	  (setf awidth (gethash "locwidth" bufr--modifier awidth))))
       (setf val (bufr--from-bits subsidx awidth))
       (if (= val (- (ash 1 awidth) 1))
 	  ;; If number equals "missing"
 	  (setq rval nil)
 	;; else calculate return number
-	(let (afactor aoffset)
-	  (setf afactor (+ factor (nth 1 (gethash "change" bufr--modifier))))
-	  (setf aoffset (gethash desc (gethash "newreflst" bufr--modifier) offset))
-	  (setf aoffset (* aoffset (nth 2 (gethash "change" bufr--modifier))))
-	  (setf rval (* (+ val aoffset) (expt 10 (- afactor))))))
+	(if wof-as-is
+	    (setf rval (* (+ val offset) (expt 10 (- factor))))
+	  (progn
+	    (setf afactor (+ factor (nth 1 (gethash "change" bufr--modifier))))
+	    (setf aoffset (gethash desc (gethash "newreflst" bufr--modifier) offset))
+	    (setf aoffset (* aoffset (nth 2 (gethash "change" bufr--modifier))))
+	    (setf rval (* (+ val aoffset) (expt 10 (- afactor)))))))
       )
      ((equal typ "table")
       ;; Read number and look up in CF table, return "single entry"
-      (setf awidth (gethash "locwidth" bufr--modifier width))
+      (if wof-as-is
+	  (setf awidth width)
+	(setf awidth (gethash "locwidth" bufr--modifier width)))
       (setf val (bufr--from-bits subsidx awidth))
       (setq rval (format "%s %s"
 			 val
@@ -366,7 +376,9 @@ Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
       )
      ((equal typ "flag")
       ;; Read number ab look up in CF table, join results in list
-      (setf awidth (gethash "locwidth" bufr--modifier width))
+      (if wof-as-is
+	  (setf awidth width)
+	(setf awidth (gethash "locwidth" bufr--modifier width)))
       (setf val (bufr--from-bits subsidx awidth))
       (let ((mval val))
 	(when (= val (- (ash 1 awidth) 1))
@@ -378,8 +390,11 @@ Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
       )
      ((equal typ "string")
       ;; Read string
-      (setf awidth (gethash "newstrlen" bufr--modifier width))
-      (setf awidth (gethash "locwidth" bufr--modifier awidth))
+      (if wof-as-is
+	  (setf awidth width)
+	(progn
+	  (setf awidth (gethash "newstrlen" bufr--modifier width))
+	  (setf awidth (gethash "locwidth" bufr--modifier awidth))))
       (setq rval (bufr--from-bits subsidx awidth 'str))
       ;; Return nil if all chars equal 0xFF
       (when (equal rval (make-string (length rval) ?\377))
@@ -388,6 +403,8 @@ Uses `bufr--*-from-*´ functions. Code/flag table references are looked up."
     (unless (equal (gethash "locwidth" bufr--modifier) nil)
       ;; Remove modifier for single "local descriptor width"
       (remhash "locwidth" bufr--modifier))
+    (when bufr--backref-recording
+      (push (list desc afactor aoffset awidth) bufr--backref-record))
     (list rval qual)
     ))
 
@@ -584,6 +601,9 @@ If END is nil just move the bit-pointer to the start of the next octet."
       (puthash "newreflst" (make-hash-table :test 'equal) bufr--modifier)
       ;; Prepare a fresh stack of unexpanded descriptors
       (setq stack (copy-sequence (gethash "udesc" bufr--meta)))
+      ;; Reset back-reference for bit-map
+      (setq bufr--backref-record '())
+      (setq bufr--backref-recording t)
       ;; Start decoding the data section according the descriptors in stack
       (if (= 0 (gethash "comp" bufr--meta))
 	  ;; uncompressed data section
@@ -647,7 +667,7 @@ SUBSIDX states the currently decoded subset."
 	      (setf fact 0)
 	      (setf offs 0)
 	      (setf wdth 0)))
-	  (setq val (bufr--get-value subsidx desc typ fact offs wdth))
+	  (setq val (bufr--get-value subsidx desc typ fact offs wdth nil))
 	  (bufr--dec-print desc name (car val) unit (nth 1 val)))
 	)
        ((= f 1)
@@ -680,7 +700,8 @@ SUBSIDX states the currently decoded subset."
        ((= f 2)
 	;; Operator
 	(setq val (bufr--dec-eval-oper x y stack subsidx))
-	(bufr--dec-print desc (format "Operator, %s" (car val)) (cdr val))
+	(setq stack (car val))
+	(bufr--dec-print desc (format "Operator, %s" (nth 1 val)) (nth 2 val))
 	)
        ((= f 3)
 	;; Sequence
@@ -717,7 +738,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	  (setq v (list 0 (nth 1 a) (nth 2 a)))
 	(setq v (list (- y 128) (nth 1 a) (nth 2 a))))
       (puthash "change" v bufr--modifier)
-      (setq r (cons "change data width" v))
+      (setq r (list stack "change data width" v))
       )
      ((= x 2)
       ;; Add YYY–128 to the scale for each data element in
@@ -728,7 +749,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	  (setq v (list (nth 0 a) 0 (nth 2 a)))
 	(setq v (list (nth 0 a) (- y 128) (nth 2 a))))
       (puthash "change" v bufr--modifier)
-      (setq r (cons "change scale" v))
+      (setq r (list stack "change scale" v))
       )
      ((= x 3)
       ;; Subsequent element descriptors define new reference
@@ -756,7 +777,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 		(setf b (- (logxor b (ash 1 (1- y))))))
 	      (puthash d b a)))
 	  (push (cons d b) v)))
-      (setq r (cons "change reference" (reverse v)))
+      (setq r (list stack "change reference" (reverse v)))
       )
      ((= x 4)
       ;; Precede each data element with YYY bits of
@@ -776,7 +797,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	(setq a (append a (list y)))
 	)
       (puthash "quality" a bufr--modifier)
-      (setq r (cons "quality information, set width" a))
+      (setq r (list stack "quality information, set width" a))
       )
      ((= x 5)
       ;; YYY characters (CCITT International Alphabet No. 5) are
@@ -787,13 +808,13 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 	       (= (length txt) 0)
 	       (equal txt (make-string y ?\377)))
 	  (setq txt nil))
-	(setq r (cons "signify characters" txt)))
+	(setq r (list stack "signify characters" txt)))
       )
      ((= x 6)
       ;; YYY bits of data are described by the immediately
       ;; following descriptor.
       (puthash "locwidth" y bufr--modifier)
-      (setq r (cons "signify data width" y))
+      (setq r (list stack "signify data width" y))
       )
      ((= x 7)
       ;; For Table B elements, which are not CCITT IA5
@@ -810,7 +831,7 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 		      (+ (nth 1 a) y)
 		      (expt 10 y))))
       (puthash "change" v bufr--modifier)
-      (setq r (cons "change width, scale, reference" v))
+      (setq r (list stack "change width, scale, reference" v))
       )
      ((= x 8)
       ;; YYY characters from CCITT International Alphabet
@@ -820,7 +841,91 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
       (if (= y 0)
 	  (remhash "newstrlen" bufr--modifier)
 	(puthash "newstrlen" (* y 8) bufr--modifier))
-      (setq r (cons "replace string data width" (list y)))
+      (setq r (list stack "replace string data width" (list y)))
+      )
+     ((= x 22)
+      (setq bufr--backref-recording nil)
+      (setq r (list stack "Quality assessment information" ""))
+      )
+     ((= x 24)
+      (setq bufr--backref-recording nil)
+      (when (= y 0)
+	(setq r (list stack "First-order statistical values follow" "")))
+      (when (= y 255)
+	(let (val)
+	  (dolist (elem bufr--backref-stack)
+	    (setf val (bufr--get-value subsidx
+				       (nth 0 elem)
+				       "double"
+				       (nth 1 elem)
+				       (nth 2 elem)
+				       (nth 3 elem)
+				       t))
+	    (setq r (list stack "First-order statistical values" (car val))))
+	))
+      )
+     ((= x 25)
+      (setq bufr--backref-recording nil)
+      (when (= y 0)
+	(setq r (list stack "Difference statistical values follow" "")))
+      (when (= y 255)
+	(let (val)
+	  (dolist (elem bufr--backref-stack)
+	    (setf val (bufr--get-value subsidx
+				       (nth 0 elem)
+				       "double"
+				       (nth 1 elem)
+				       (- (expt 2 (nth 3 elem)))
+				       (1+ (nth 3 elem))
+				       t))
+	    (setq r (list stack "Difference statistical values" (car val))))
+	))
+      )
+     ((= x 36)
+      ;; Define data present bit-map.
+      (setq bufr--backref-recording nil)
+      (setq bufr--backref-stack '())
+      (let (foo foo2 tabentry wdth rep (bitmap '()) rec recentr)
+	(setq foo (pop stack))
+	(push foo foo2)
+	(setf rep (string-to-number (substring foo 3 6)))
+	(when (= rep 0)
+	  (setq foo (pop stack))
+	  (push foo foo2)
+	  (setq tabentry (gethash foo bufr--tab_b))
+	  (setf wdth (string-to-number (nth 6 tabentry)))
+	  (setf rep (bufr--from-bits subsidx wdth)))
+	(setq foo (pop stack))
+	(push foo foo2)
+	(setq tabentry (gethash foo bufr--tab_b))
+	(setf wdth (string-to-number (nth 6 tabentry)))
+	(setq rec (copy-sequence bufr--backref-record))
+	(dotimes (_ rep)
+	  (push (bufr--from-bits subsidx wdth) bitmap))
+	(dolist (b bitmap)
+	  (setq recentr (pop rec))
+	  (when (= b 0)
+	    (push recentr bufr--backref-stack))
+	  )
+	(setq r (list stack
+		      (format "Bitmap %s" (reverse foo2))
+		      (format "%s %s"
+			      (mapconcat (lambda (s) (format "%d" s))
+					 (reverse bitmap)
+					 "")
+			      (mapcar (lambda (z) (car z))
+				      bufr--backref-stack))
+		      )))
+      )
+     ((= x 37)
+      (when (= y 0)
+	(setq bufr--backref-recording nil)
+	(setq r (list stack "Re-use bitmap" (mapcar (lambda (z) (car z)) bufr--backref-stack))))
+      (when (= y 255)
+	(setq bufr--backref-recording t)
+	(setq bufr--backref-record '())
+	(setq bufr--backref-stack '())
+	(setq r (list stack "Cancel bitmap use" bufr--backref-stack)))
       )
      (t
       (error (format "Operator '2%02d%03d' not implemented!" x y))
@@ -832,7 +937,6 @@ Implemented: fxx= 201 202 203 204 205 206 207 208"
 (defun bufr--dec-print (desc name val &optional unit qual)
   "Print values in a pretty and column-like order to `output buffer´."
   (let (vtxt utxt (qtxt ""))
-					; TODO: eval/format QUAL.
     (setq vtxt val)
     (if (or (equal unit nil)
 	    (equal unit "Numeric")
